@@ -21,22 +21,18 @@ import com.prasha.application.database.service.DatabaseServiceImpl;
 import com.prasha.application.exception.service.StreamServiceException;
 import io.jsonwebtoken.*;
 
+import static com.prasha.application.CommonUtils.*;
+
 public class AuthenticatorServiceImpl implements AuthenticatorService {
 
     private static final Logger log = Logger.getLogger(AuthenticatorServiceImpl.class.getName());
-    private static final AuthenticatorServiceImpl AUTH_SERVICE_IMPL = new AuthenticatorServiceImpl();
+    private static final AuthenticatorService AUTH_SERVICE = new AuthenticatorServiceImpl();
+    private static final DatabaseServiceImpl dbService = DatabaseServiceImpl.getInstance();
     // TODO: there might be affects of declaring mapper as static check once
     private static final ObjectMapper mapper = new ObjectMapper();
-    private static String secretKey = "";
+    private static String secretKey = "JYreE_cMH6U5OaByLOg3nSKUCwk3b0lYexyhQhLUcb5iuSBM5H6l5LDVux_epBV9-Y8qbRG_QmOF-iETzs7lhmEp_A6vRGsF5IB5uJkao_h-RBB1NJqRd5e6XWuk9CS6jiSzN8eIfLJCI_Mn2xZOE9p_5U_Wmqqsajo2G7odSudAjn_6L3q94e_TOKqaeevfMhbJms9kSSzPlu1qszxG2y5naXclybLDIG51-U7dup26kbwtdK0SxUfu6NHCfdkdl_xrfuikbq5QaZjTO6M0JUAl1MU3CdVsyMHM3uUIMF33wwwzU1dCeJ1Ld2zThSFMJcAtm8wVnmyn-vhW4BEifw";
     // 30 days in seconds
     private static Long expiryInSecs = LocalDateTime.now(ZoneOffset.UTC).plusSeconds(2592000L).toEpochSecond(ZoneOffset.UTC);
-    private static final String APP_NAME = "stream-service";
-    private static final String IDENTITY_STORE_DB = "identityStore";
-    private static final String USERNAME = "userName";
-    private static final String PASSWORD = "password";
-    private static final String ACCESS_TOKEN = "accessToken";
-    private static final String DEFAULT_USERNAME = "admin";
-    private static final String DEFAULT_PASSWORD = "admin";
 
     private static JsonNode createDefaultUserCredentials() {
         ObjectMapper mapper = new ObjectMapper();
@@ -51,34 +47,42 @@ public class AuthenticatorServiceImpl implements AuthenticatorService {
         DatabaseServiceImpl.getInstance().insertOne(IDENTITY_STORE_DB, createDefaultUserCredentials());
     }
 
-    public static AuthenticatorServiceImpl getInstance() {
-        return AUTH_SERVICE_IMPL;
+    public static AuthenticatorService getInstance() {
+        return AUTH_SERVICE;
     }
 
     @Override
 	public JsonNode generateUserAccessToken(String requestCredential) {
-        if (!verifyUserCredentials(requestCredential)) {
+        JsonNode result = verifyUserCredentials(requestCredential);
+        if (result == null) {
             throw new StreamServiceException(Response.Status.FORBIDDEN);
         }
 
         ObjectNode jNode = mapper.createObjectNode();
-        String jwt = createJWTToken(APP_NAME, DEFAULT_USERNAME);
+        String jwt = createJWTToken(APP_NAME, result.get(USERNAME).asText());
         validateToken(jwt);
         // Insert access token corresponding to user in db with expiry time
         return jNode.put(ACCESS_TOKEN, jwt);
 	}
 
+	@Override
+	public void createUser(JsonNode requestJson) {
+        JsonNode result = getUserData(requestJson.get(USERNAME).asText());
+        if (result != null) {
+            throw new StreamServiceException(Response.Status.CONFLICT);
+        }
+
+        dbService.insertOne(IDENTITY_STORE_DB, requestJson);
+    }
+
 	/*TODO: Can change from random UUID to random base64 string?*/
 	private String createJWTToken(String appName, String userName) {
         SignatureAlgorithm signatureAlgorithm = SignatureAlgorithm.HS256;
-	    if (secretKey == null || secretKey.isEmpty()) {
-            this.secretKey = generateRandomKey();
-        }
-
-        byte[] apiKeySecretBytes = DatatypeConverter.parseBase64Binary(this.secretKey);
+	    // secretKey being used for generating token
+	    byte[] apiKeySecretBytes = DatatypeConverter.parseBase64Binary(this.secretKey);
         Key signingKey = new SecretKeySpec(apiKeySecretBytes, signatureAlgorithm.getJcaName());
 
-        return Jwts.builder().setIssuer(appName)
+        String token = Jwts.builder().setIssuer(appName)
                 .setSubject(userName)
                 .setExpiration(Date.from(Instant.ofEpochSecond(expiryInSecs)
                         .atOffset(ZoneOffset.UTC).toInstant()))
@@ -86,19 +90,20 @@ public class AuthenticatorServiceImpl implements AuthenticatorService {
                 .claim(USERNAME, userName)
                 .signWith(SignatureAlgorithm.HS256, signingKey)
                 .compact();
+
+        return token;
     }
 
-    public Claims validateToken(String jwt) {
+    public String validateToken(String jwt) {
         try {
             Claims claims = Jwts.parser()
                     .setSigningKey(DatatypeConverter.parseBase64Binary(secretKey))
                     .parseClaimsJws(jwt).getBody();
-            return claims;
+            String userName = (String) claims.get(USERNAME);
+            return userName;
         } catch (ExpiredJwtException | SignatureException | MalformedJwtException e) {
-            // TODO: Create custom exception handler
-            log.severe(String.format("Invalid request", e.getMessage()));
+            throw new StreamServiceException(Response.Status.FORBIDDEN);
         }
-        return null;
     }
 
     private String generateRandomKey() {
@@ -109,12 +114,12 @@ public class AuthenticatorServiceImpl implements AuthenticatorService {
         return new String(Base64.getDecoder().decode(credential));
     }
 
-    private boolean verifyUserCredentials(String requestCredential) {
+    private JsonNode verifyUserCredentials(String requestCredential) {
         String decodedCredential = decoder(requestCredential);
         String userName = decodedCredential.split(":")[0];
         String password = decodedCredential.split(":")[1];
 
-        if (!checkIfUserExists(userName)) {
+        if (getUserData(userName) == null) {
             throw new StreamServiceException(Response.Status.NOT_FOUND);
         }
 
@@ -124,13 +129,15 @@ public class AuthenticatorServiceImpl implements AuthenticatorService {
         array.add(mapper.createObjectNode().put(PASSWORD, password));
         queryNode.put(DatabaseService.MONGO_AND_OPERATOR, array);
 
-        return DatabaseServiceImpl.getInstance().findOne(IDENTITY_STORE_DB, queryNode) != null ? true : false;
+        JsonNode result = DatabaseServiceImpl.getInstance().findOne(IDENTITY_STORE_DB, queryNode);
+        return result != null ? result : null;
     }
 
-    private boolean checkIfUserExists(final String userName) {
+    private JsonNode getUserData(final String userName) {
 	    ObjectNode queryNode = mapper.createObjectNode();
 	    queryNode.put(USERNAME, userName);
 
-        return DatabaseServiceImpl.getInstance().findOne(IDENTITY_STORE_DB, queryNode) != null ? true : false;
+        JsonNode result = DatabaseServiceImpl.getInstance().findOne(IDENTITY_STORE_DB, queryNode);
+        return result != null ? result : null;
     }
 }

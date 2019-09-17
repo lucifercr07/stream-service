@@ -3,7 +3,7 @@ package com.prasha.application.exception.service;
 import javax.ws.rs.core.Response.Status;
 
 public class StreamServiceException extends RuntimeException {
-    private static final long serialVersionUID = 1L;
+    private static final long serialVersionUID = 1345324523417567L;
     private String message;
     private Status messageStatusCode;
 

@@ -42,6 +42,9 @@ public class DatabaseServiceImpl implements DatabaseService {
     @Override
     public void insertOne(final String collectionName, final JsonNode jsonNode) {
         MongoCollection<Document> collection = getCollection(db, collectionName);
+        if (collection == null) {
+        	log.info("Funckjasdlkjasd");
+        }
         collection.insertOne(convertJSONtoBSON(jsonNode));
     }
 
@@ -49,7 +52,8 @@ public class DatabaseServiceImpl implements DatabaseService {
     public JsonNode findOne(final String collectionName, final JsonNode query) {
         MongoCollection<Document> collection = getCollection(db, collectionName);
         try {
-            FindIterable<Document> doc = collection.find(convertJSONtoBSON(query)).projection(fields(excludeId()));
+            FindIterable<Document> doc = collection.find(convertJSONtoBSON(query));
+            log.info(query.toString());
             if (doc.first() == null) {
                 return null;
             }
